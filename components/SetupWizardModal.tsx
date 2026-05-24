@@ -211,9 +211,24 @@ export function SetupWizardModal({ onClose }: SetupWizardModalProps) {
 
   const connectGmail = useCallback(() => {
     setGmailBusy(true);
-    const popup = window.open('/api/auth/google', 'gmail-auth', 'width=500,height=650');
+    // Try popup first
+    const popup = window.open('/api/auth/google', 'gmail-auth', 'width=500,height=700,noopener=no');
+
+    // Popup blocked? Fall back to same-tab navigation.
+    if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+      window.location.href = '/api/auth/google';
+      return;
+    }
+
+    // Try to focus the popup (some browsers open it in the background)
+    try {
+      popup.focus();
+    } catch {
+      // ignore
+    }
+
     const timer = setInterval(() => {
-      if (popup?.closed) {
+      if (popup.closed) {
         clearInterval(timer);
         setGmailBusy(false);
         void refreshGmailStatus();

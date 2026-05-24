@@ -54,11 +54,14 @@ function authResultHtml(message: string, success: boolean): string {
 </div>
 <script>
   if (${success}) {
-    // Notify the opener if this was a popup
-    if (window.opener) {
+    // Popup mode: notify opener and close
+    if (window.opener && window.opener !== window) {
       try { window.opener.postMessage({ type: 'gmail-connected' }, '*'); } catch {}
+      setTimeout(() => { try { window.close(); } catch {} }, 1200);
+    } else {
+      // Same-tab mode: redirect back to dashboard
+      setTimeout(() => { window.location.href = '/'; }, 1500);
     }
-    setTimeout(() => { try { window.close(); } catch {} }, 1500);
   }
 </script>
 </body></html>`;
