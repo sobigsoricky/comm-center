@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { useDraftStore, usePendingDrafts, useSentDrafts } from '@/store/useDraftStore';
 import { DraftQueue } from './DraftQueue';
@@ -8,6 +8,7 @@ import { DraftDetail } from './DraftDetail';
 import { ActivityLog } from './ActivityLog';
 import { WAModal } from './WAModal';
 import { SetupWizardModal } from './SetupWizardModal';
+import { GmailConnectModal } from './GmailConnectModal';
 import { Draft, RedraftRequest } from '@/lib/types';
 
 export function CommandCenter() {
@@ -16,7 +17,37 @@ export function CommandCenter() {
   const [isRedrafting, setIsRedrafting] = useState(false);
   const [showWAModal, setShowWAModal] = useState(false);
   const [showSetupWizard, setShowSetupWizard] = useState(false);
+  const [showGmailModal, setShowGmailModal] = useState(false);
   const [scanStatus, setScanStatus] = useState('');
+
+  // Gmail connection state — drives the banner + Connect Gmail button
+  const [gmailConnected, setGmailConnected] = useState<boolean | null>(null);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+
+  const refreshGmailStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth/google/status', { cache: 'no-store' });
+      const data = await res.json();
+      setGmailConnected(Boolean(data.connected));
+    } catch {
+      setGmailConnected(false);
+    }
+  }, []);
+
+  // Poll status on mount + when the OAuth popup posts back
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
+    void refreshGmailStatus();
+    /* eslint-enable react-hooks/set-state-in-effect */
+    const onMessage = (e: MessageEvent) => {
+      if (e.data?.type === 'gmail-connected') void refreshGmailStatus();
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [refreshGmailStatus]);
+
+  // Slide-in banner state — animates in once we know we're disconnected
+  const showBanner = gmailConnected === false && !bannerDismissed;
 
   const { addDrafts, addDraft, updateDraft, addLog } = useDraftStore();
   const pending = usePendingDrafts();
@@ -162,18 +193,65 @@ export function CommandCenter() {
         )}
 
         {/* Actions */}
-        <div className="ml-auto flex gap-2">
+        <div className="ml-auto flex gap-2 items-center">
+          {gmailConnected === false && (
+            <HeaderBtn onClick={() => setShowGmailModal(true)} variant="accent">
+              ✉ Connect Gmail
+            </HeaderBtn>
+          )}
+          {gmailConnected === true && (
+            <span className="text-[10px] tracking-widest text-emerald-400/80 font-mono flex items-center gap-1.5 px-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]" />
+              GMAIL LIVE
+            </span>
+          )}
           <HeaderBtn onClick={() => setShowSetupWizard(true)} variant="secondary">
             ⚙ Setup
           </HeaderBtn>
           <HeaderBtn onClick={() => setShowWAModal(true)} disabled={isDraftingWA} variant="secondary">
             {isDraftingWA ? '⟳ Drafting…' : '+ WhatsApp'}
           </HeaderBtn>
-          <HeaderBtn onClick={handleScanGmail} disabled={isScanning} variant="primary">
+          <HeaderBtn onClick={handleScanGmail} disabled={isScanning || gmailConnected === false} variant="primary">
             {isScanning ? '⟳ Scanning…' : '⟳ Scan Gmail'}
           </HeaderBtn>
         </div>
       </header>
+
+      {/* ── Gmail-not-connected banner (slides in) ─────────── */}
+      <div
+        className="flex-shrink-0 overflow-hidden transition-all duration-300 ease-out"
+        style={{
+          maxHeight: showBanner ? '80px' : '0px',
+          opacity: showBanner ? 1 : 0,
+        }}
+      >
+        <div className="bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent border-b border-amber-500/20 px-5 py-3 flex items-center gap-4">
+          <div className="w-7 h-7 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center flex-shrink-0">
+            <span className="text-amber-400 text-sm">✉</span>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-mono text-[11px] text-amber-300 font-bold tracking-wide">
+              Gmail not connected
+            </p>
+            <p className="font-mono text-[10px] text-slate-500 mt-0.5">
+              Authorize Gmail once to enable inbox scanning and AI drafts.
+            </p>
+          </div>
+          <button
+            onClick={() => setShowGmailModal(true)}
+            className="font-mono text-[10px] font-bold tracking-widest uppercase px-4 py-2 rounded-md bg-amber-500 text-black hover:bg-amber-400 transition-all shadow-[0_4px_20px_-4px_rgba(245,158,11,0.4)] active:scale-[0.98] flex-shrink-0"
+          >
+            Connect Gmail
+          </button>
+          <button
+            onClick={() => setBannerDismissed(true)}
+            aria-label="Dismiss"
+            className="w-6 h-6 flex items-center justify-center rounded text-slate-600 hover:text-slate-400 hover:bg-white/5 transition-colors text-base leading-none flex-shrink-0"
+          >
+            ×
+          </button>
+        </div>
+      </div>
 
       {/* ── Main ────────────────────────────────────────────── */}
       <main className="flex-1 flex overflow-hidden">
@@ -195,6 +273,14 @@ export function CommandCenter() {
       {showSetupWizard && (
         <SetupWizardModal onClose={() => setShowSetupWizard(false)} />
       )}
+      <GmailConnectModal
+        isOpen={showGmailModal}
+        onClose={() => setShowGmailModal(false)}
+        onConnected={() => {
+          void refreshGmailStatus();
+          addLog('Gmail connected', 'success');
+        }}
+      />
     </div>
   );
 }
@@ -215,17 +301,21 @@ function StatPill({ color, label }: { color: string; label: string }) {
 function HeaderBtn({
   children, onClick, disabled, variant,
 }: {
-  children: React.ReactNode; onClick: () => void; disabled?: boolean; variant: 'primary' | 'secondary';
+  children: React.ReactNode; onClick: () => void; disabled?: boolean; variant: 'primary' | 'secondary' | 'accent';
 }) {
+  const styles =
+    variant === 'primary'
+      ? 'bg-amber-500 text-black hover:bg-amber-400'
+      : variant === 'accent'
+        ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 hover:text-emerald-200 shadow-[0_0_15px_-5px_rgba(52,211,153,0.4)]'
+        : 'bg-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-700';
   return (
     <button
       onClick={onClick}
       disabled={disabled}
       className={clsx(
         'font-mono text-[10px] font-bold tracking-widest uppercase px-3 py-1.5 rounded transition-all disabled:opacity-40 disabled:cursor-not-allowed',
-        variant === 'primary'
-          ? 'bg-amber-500 text-black hover:bg-amber-400'
-          : 'bg-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-700'
+        styles
       )}
     >
       {children}
