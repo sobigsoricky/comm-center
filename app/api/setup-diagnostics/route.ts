@@ -89,43 +89,57 @@ export async function GET(): Promise<NextResponse<DiagnosticsResponse>> {
   const commEnv = parseEnv(commEnvExists ? await fs.readFile(COMM_ENV_PATH, 'utf8') : '');
   const waEnv = parseEnv(waEnvExists ? await fs.readFile(WA_ENV_PATH, 'utf8') : '');
 
-  checks.push({
-    key: 'comm-env',
-    label: 'Comm Center config',
-    level: commEnvExists ? 'healthy' : 'error',
-    detail: commEnvExists ? '.env.local found' : '.env.local missing in comm-center app',
-    stepId: 'keys',
-    action: 'Open step 1 and save API configuration',
-    reason: commEnvExists ? 'Configuration file is present.' : 'The app cannot read key values until .env.local exists.',
-  });
+  // Effective values: env vars (Railway/Vercel/etc.) take precedence, fall back to .env.local file.
+  const isCloud = !commEnvExists && Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.VERCEL || process.env.RENDER);
+  const sourceLabel = (fromProcess: boolean) =>
+    fromProcess ? 'platform env vars' : '.env.local file';
+
+  const commKey = process.env.ANTHROPIC_API_KEY || commEnv.ANTHROPIC_API_KEY;
+  const commKeyFromProcess = Boolean(process.env.ANTHROPIC_API_KEY);
+  const googleId = process.env.GOOGLE_CLIENT_ID || commEnv.GOOGLE_CLIENT_ID;
+  const googleSecret = process.env.GOOGLE_CLIENT_SECRET || commEnv.GOOGLE_CLIENT_SECRET;
+  const googleFromProcess = Boolean(process.env.GOOGLE_CLIENT_ID);
+
+  // On cloud platforms, the .env.local file isn't expected — skip that check entirely.
+  if (!isCloud) {
+    checks.push({
+      key: 'comm-env',
+      label: 'Comm Center config',
+      level: commEnvExists ? 'healthy' : 'error',
+      detail: commEnvExists ? '.env.local found' : '.env.local missing in comm-center app',
+      stepId: 'keys',
+      action: 'Open step 1 and save API configuration',
+      reason: commEnvExists ? 'Configuration file is present.' : 'The app cannot read key values until .env.local exists.',
+    });
+  }
 
   checks.push({
     key: 'comm-key',
     label: 'Comm Center API key',
-    level: commEnv.ANTHROPIC_API_KEY ? 'healthy' : 'error',
-    detail: commEnv.ANTHROPIC_API_KEY
-      ? 'Anthropic key configured for app routes'
-      : 'ANTHROPIC_API_KEY is missing in .env.local',
+    level: commKey ? 'healthy' : 'error',
+    detail: commKey
+      ? `Anthropic key configured (from ${sourceLabel(commKeyFromProcess)})`
+      : 'ANTHROPIC_API_KEY is missing — set in Railway/Vercel env vars or .env.local',
     stepId: 'keys',
-    action: 'Enter Comm Center key in step 1 and save',
-    reason: commEnv.ANTHROPIC_API_KEY
-      ? 'API key was detected in Comm Center env.'
+    action: 'Add ANTHROPIC_API_KEY to your platform env vars',
+    reason: commKey
+      ? 'API key was detected.'
       : 'Scan/draft API routes require ANTHROPIC_API_KEY.',
   });
 
-  const googleClientConfigured = Boolean(commEnv.GOOGLE_CLIENT_ID && commEnv.GOOGLE_CLIENT_SECRET);
+  const googleClientConfigured = Boolean(googleId && googleSecret);
   const gmailTokenExists = await exists(GMAIL_TOKEN_PATH);
   checks.push({
     key: 'gmail-oauth-config',
     label: 'Gmail OAuth credentials',
     level: googleClientConfigured ? 'healthy' : 'setup_required',
     detail: googleClientConfigured
-      ? 'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET set'
-      : 'GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET missing in .env.local',
+      ? `GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET set (from ${sourceLabel(googleFromProcess)})`
+      : 'GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET missing — set in your platform env vars',
     stepId: 'gmail',
     action: 'Follow SETUP.md to create Google OAuth credentials',
     reason: googleClientConfigured
-      ? 'OAuth credentials detected in .env.local.'
+      ? 'OAuth credentials detected.'
       : 'Without these, the Connect Gmail button cannot start the OAuth flow.',
   });
 
@@ -143,60 +157,65 @@ export async function GET(): Promise<NextResponse<DiagnosticsResponse>> {
       : 'Scan Gmail cannot run until a refresh token exists.',
   });
 
-  checks.push({
-    key: 'wa-env',
-    label: 'WhatsApp bot config (optional)',
-    level: waEnvExists ? 'healthy' : 'setup_required',
-    detail: waEnvExists ? '.env found for whatsapp-bot' : '.env missing — bot is optional, skip if not using it',
-    stepId: 'keys',
-    action: 'Open step 1 and save bot configuration',
-    reason: waEnvExists ? 'Bot configuration file is present.' : 'Bot reads runtime values from whatsapp-bot/.env.',
-  });
+  // WhatsApp bot + local-runtime checks only apply when running locally.
+  if (!isCloud) {
+    checks.push({
+      key: 'wa-env',
+      label: 'WhatsApp bot config (optional)',
+      level: waEnvExists ? 'healthy' : 'setup_required',
+      detail: waEnvExists ? '.env found for whatsapp-bot' : '.env missing — bot is optional, skip if not using it',
+      stepId: 'keys',
+      action: 'Open step 1 and save bot configuration',
+      reason: waEnvExists ? 'Bot configuration file is present.' : 'Bot reads runtime values from whatsapp-bot/.env.',
+    });
 
-  checks.push({
-    key: 'wa-key',
-    label: 'WhatsApp bot API key (optional)',
-    level: waEnv.ANTHROPIC_API_KEY ? 'healthy' : 'setup_required',
-    detail: waEnv.ANTHROPIC_API_KEY
-      ? 'Anthropic key configured for bot drafting'
-      : 'ANTHROPIC_API_KEY is missing in whatsapp-bot/.env',
-    stepId: 'keys',
-    action: 'Enter WhatsApp bot key in step 1 and save',
-    reason: waEnv.ANTHROPIC_API_KEY
-      ? 'API key was detected in bot env.'
-      : 'Bot cannot generate replies without ANTHROPIC_API_KEY.',
-  });
+    checks.push({
+      key: 'wa-key',
+      label: 'WhatsApp bot API key (optional)',
+      level: waEnv.ANTHROPIC_API_KEY ? 'healthy' : 'setup_required',
+      detail: waEnv.ANTHROPIC_API_KEY
+        ? 'Anthropic key configured for bot drafting'
+        : 'ANTHROPIC_API_KEY is missing in whatsapp-bot/.env',
+      stepId: 'keys',
+      action: 'Enter WhatsApp bot key in step 1 and save',
+      reason: waEnv.ANTHROPIC_API_KEY
+        ? 'API key was detected in bot env.'
+        : 'Bot cannot generate replies without ANTHROPIC_API_KEY.',
+    });
 
-  checks.push({
-    key: 'wa-install',
-    label: 'WhatsApp bot dependencies',
-    level: waNodeModulesExists ? 'healthy' : 'setup_required',
-    detail: waNodeModulesExists ? 'node_modules present in whatsapp-bot' : 'Dependencies may not be installed yet',
-    stepId: 'bot-install',
-    action: 'Go to install step and run dependency commands',
-    reason: waNodeModulesExists
-      ? 'Dependencies folder exists.'
-      : 'whatsapp-bot/node_modules was not found.',
-  });
+    checks.push({
+      key: 'wa-install',
+      label: 'WhatsApp bot dependencies (optional)',
+      level: waNodeModulesExists ? 'healthy' : 'setup_required',
+      detail: waNodeModulesExists ? 'node_modules present in whatsapp-bot' : 'Dependencies may not be installed yet',
+      stepId: 'bot-install',
+      action: 'Go to install step and run dependency commands',
+      reason: waNodeModulesExists
+        ? 'Dependencies folder exists.'
+        : 'whatsapp-bot/node_modules was not found.',
+    });
 
-  checks.push({
-    key: 'wa-auth',
-    label: 'WhatsApp Web authentication',
-    level: waAuthExists ? 'healthy' : 'setup_required',
-    detail: waAuthExists ? 'Saved auth session found (QR setup done)' : 'No saved auth found; run node setup.js',
-    stepId: 'wa-auth',
-    action: 'Open auth step and run node setup.js to scan QR',
-    reason: waAuthExists
-      ? 'Auth directory contains saved session files.'
-      : 'whatsapp-bot/auth is missing or empty.',
-  });
+    checks.push({
+      key: 'wa-auth',
+      label: 'WhatsApp Web authentication (optional)',
+      level: waAuthExists ? 'healthy' : 'setup_required',
+      detail: waAuthExists ? 'Saved auth session found (QR setup done)' : 'No saved auth found; run node setup.js',
+      stepId: 'wa-auth',
+      action: 'Open auth step and run node setup.js to scan QR',
+      reason: waAuthExists
+        ? 'Auth directory contains saved session files.'
+        : 'whatsapp-bot/auth is missing or empty.',
+    });
+  }
 
   const commPort = process.env.PORT ?? '3002';
   checks.push({
     key: 'comm-runtime',
     label: 'Comm Center runtime',
     level: commServerOpen ? 'healthy' : 'error',
-    detail: commServerOpen ? `App reachable on localhost:${commPort}` : `Dev server may not be running on :${commPort}`,
+    detail: commServerOpen
+      ? isCloud ? 'App live on cloud platform' : `App reachable on localhost:${commPort}`
+      : `Dev server may not be running on :${commPort}`,
     stepId: 'comm-center',
     action: 'Open app runtime step and start npm run dev',
     reason: commServerOpen
@@ -204,19 +223,21 @@ export async function GET(): Promise<NextResponse<DiagnosticsResponse>> {
       : 'Server route did not confirm app runtime.',
   });
 
-  checks.push({
-    key: 'wa-runtime',
-    label: 'WhatsApp bot runtime',
-    level: waServerOpen ? 'healthy' : 'setup_required',
-    detail: waServerOpen
-      ? `Bot dashboard/API reachable on localhost:${waPort}`
-      : `Bot not reachable on :${waPort} (start node index.js)`,
-    stepId: 'run-bot',
-    action: 'Open run-bot step and start node index.js',
-    reason: waServerOpen
-      ? 'HTTP status check succeeded for bot status endpoint.'
-      : `GET http://localhost:${waPort}/api/status did not return success.`,
-  });
+  if (!isCloud) {
+    checks.push({
+      key: 'wa-runtime',
+      label: 'WhatsApp bot runtime (optional)',
+      level: waServerOpen ? 'healthy' : 'setup_required',
+      detail: waServerOpen
+        ? `Bot dashboard/API reachable on localhost:${waPort}`
+        : `Bot not reachable on :${waPort} (start node index.js)`,
+      stepId: 'run-bot',
+      action: 'Open run-bot step and start node index.js',
+      reason: waServerOpen
+        ? 'HTTP status check succeeded for bot status endpoint.'
+        : `GET http://localhost:${waPort}/api/status did not return success.`,
+    });
+  }
 
   const summary = checks.reduce(
     (acc, item) => {
