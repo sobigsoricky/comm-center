@@ -29,5 +29,7 @@ class CommBus extends EventEmitter {
 // Singleton across hot-reloads in dev
 const globalAny = globalThis as unknown as { __commBus?: CommBus };
 export const eventBus: CommBus = globalAny.__commBus ?? (globalAny.__commBus = new CommBus());
-// Many simultaneous subscribers in long sessions — bump the listener cap
-eventBus.setMaxListeners(50);
+// Many simultaneous subscribers in long sessions — bump the listener cap.
+// Each SSE client adds 1 listener; in dev mode, HMR can briefly stack a few.
+// 200 is generous; we'll never approach this in normal use.
+eventBus.setMaxListeners(200);

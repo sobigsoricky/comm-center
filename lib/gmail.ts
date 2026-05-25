@@ -113,7 +113,8 @@ export interface ParsedMessage {
   receivedAt: string; // ISO
 }
 
-function headerValue(
+// Exported for testing — keep internal contract stable
+export function headerValue(
   headers: gmail_v1.Schema$MessagePartHeader[] | undefined,
   name: string
 ): string {
@@ -122,13 +123,13 @@ function headerValue(
   return h?.value ?? '';
 }
 
-function decodeBase64Url(data: string): string {
+export function decodeBase64Url(data: string): string {
   // Gmail uses URL-safe base64
   const normalized = data.replace(/-/g, '+').replace(/_/g, '/');
   return Buffer.from(normalized, 'base64').toString('utf8');
 }
 
-function extractPlainBody(payload: gmail_v1.Schema$MessagePart | undefined): string {
+export function extractPlainBody(payload: gmail_v1.Schema$MessagePart | undefined): string {
   if (!payload) return '';
 
   // Prefer text/plain part
@@ -160,7 +161,7 @@ function extractPlainBody(payload: gmail_v1.Schema$MessagePart | undefined): str
 
 export type TimeRange = '7d' | '30d' | '90d' | '1y' | '2y' | 'all';
 
-function rangeToQuery(range: TimeRange): string {
+export function rangeToQuery(range: TimeRange): string {
   switch (range) {
     case '7d':
       return 'newer_than:7d';

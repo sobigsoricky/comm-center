@@ -119,11 +119,13 @@ If WhatsApp logs out (you tap "Log out" inside Linked Devices on your phone, or 
 4. After deploy, click **Settings** → **Networking** → **Generate Domain**. You'll get something like `comm-center-production.up.railway.app`.
 5. Add these env vars (Settings → Variables):
    ```
+   APP_PASSWORD             = <pick a strong password — this gates ALL access>
    ANTHROPIC_API_KEY        = sk-ant-...
    GOOGLE_CLIENT_ID         = ...apps.googleusercontent.com
    GOOGLE_CLIENT_SECRET     = GOCSPX-...
    GOOGLE_REDIRECT_URI      = https://<your-railway-domain>/api/auth/google/callback
    ```
+   **APP_PASSWORD is critical** — without it, anyone who finds your Railway URL can send WhatsApp messages from your account. Pick something long and random.
 6. In Google Cloud Console → Credentials → your OAuth client → **Authorized redirect URIs** → add the same `https://<your-railway-domain>/api/auth/google/callback` (keep the localhost one too).
 7. ⚠ **Add a persistent volume**: Railway → your service → **Settings** → **Volumes** → **+ New Volume** → mount path: **`/data`**. This single volume holds:
    - `/data/whatsapp-session/` — Baileys auth (survives redeploys, never re-scan QR)
