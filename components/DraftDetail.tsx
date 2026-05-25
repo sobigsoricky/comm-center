@@ -18,6 +18,7 @@ export function DraftDetail({ onRedraftRequest, isRedrafting }: DraftDetailProps
   const [copied, setCopied] = useState(false);
   const [showRedraft, setShowRedraft] = useState(false);
   const [instruction, setInstruction] = useState('');
+  const [sendingWA, setSendingWA] = useState(false);
 
   if (!draft) {
     return (
@@ -42,6 +43,27 @@ export function DraftDetail({ onRedraftRequest, isRedrafting }: DraftDetailProps
   const handleMarkSent = () => {
     markSent(draft.id);
     addLog(`Marked as sent: ${draft.from}`, 'success');
+  };
+
+  const handleSendWA = async () => {
+    if (sendingWA) return;
+    setSendingWA(true);
+    addLog(`Sending WhatsApp to ${draft.from}`, 'info');
+    try {
+      const res = await fetch('/api/whatsapp/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ draftId: draft.id }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || 'Send failed');
+      markSent(draft.id);
+      addLog(`Sent WhatsApp to ${draft.from}`, 'success');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      addLog(`WhatsApp send error: ${msg}`, 'error');
+    }
+    setSendingWA(false);
   };
 
   const handleRedraft = () => {
@@ -158,6 +180,14 @@ export function DraftDetail({ onRedraftRequest, isRedrafting }: DraftDetailProps
             ✉ Open in Gmail
           </ActionBtn>
         )}
+
+        {draft.channel === 'whatsapp' &&
+          draft.status === 'pending' &&
+          draft.from.includes('@') && (
+            <ActionBtn onClick={handleSendWA} variant="green" disabled={sendingWA}>
+              {sendingWA ? '⟳ Sending…' : '➤ Send via WhatsApp'}
+            </ActionBtn>
+          )}
 
         {draft.status === 'pending' && (
           <ActionBtn onClick={handleMarkSent} variant="green">✓ Mark Sent</ActionBtn>

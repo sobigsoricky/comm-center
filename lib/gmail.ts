@@ -156,6 +156,100 @@ function extractPlainBody(payload: gmail_v1.Schema$MessagePart | undefined): str
   return '';
 }
 
+// ── Time-range + pending-reply fetching ──────────────────────────
+
+export type TimeRange = '7d' | '30d' | '90d' | '1y' | '2y' | 'all';
+
+function rangeToQuery(range: TimeRange): string {
+  switch (range) {
+    case '7d':
+      return 'newer_than:7d';
+    case '30d':
+      return 'newer_than:30d';
+    case '90d':
+      return 'newer_than:90d';
+    case '1y':
+      return 'newer_than:1y';
+    case '2y':
+      return 'newer_than:2y';
+    case 'all':
+    default:
+      return '';
+  }
+}
+
+/**
+ * Fetch threads in the inbox needing reply.
+ * "Pending reply" = the latest message in the thread is NOT from me.
+ * Returns the latest incoming message of each pending thread.
+ */
+export async function fetchPendingThreads(opts: {
+  range: TimeRange;
+  max: number;
+  pendingOnly: boolean;
+}): Promise<ParsedMessage[]> {
+  const { range, max, pendingOnly } = opts;
+  const client = await getAuthedClient();
+  if (!client) throw new Error('Gmail not connected. Click "Connect Gmail" first.');
+
+  const gmail = google.gmail({ version: 'v1', auth: client });
+
+  // Build search query — inbox + range, excluding our own sent items appearing in inbox
+  const rangeQ = rangeToQuery(range);
+  const baseQ = ['in:inbox', '-from:me', rangeQ].filter(Boolean).join(' ');
+
+  // List threads, not messages — much fewer API calls for inbox triage
+  const list = await gmail.users.threads.list({
+    userId: 'me',
+    q: baseQ,
+    maxResults: Math.min(max * 2, 100), // fetch extra; we'll filter
+  });
+
+  const threadIds = list.data.threads?.map((t) => t.id!).filter(Boolean) ?? [];
+  if (threadIds.length === 0) return [];
+
+  // Fetch each thread's full message list in parallel
+  const threads = await Promise.all(
+    threadIds.map((id) =>
+      gmail.users.threads.get({ userId: 'me', id, format: 'full' }).catch(() => null)
+    )
+  );
+
+  const out: ParsedMessage[] = [];
+
+  for (const res of threads) {
+    if (!res?.data?.messages?.length) continue;
+    const msgs = res.data.messages;
+
+    // The latest message in the thread = needs reply if NOT from me
+    const last = msgs[msgs.length - 1];
+    const lastHeaders = last.payload?.headers;
+    const lastFrom = headerValue(lastHeaders, 'From');
+
+    // "from:me" was already filtered server-side via the query, but Gmail occasionally
+    // shows threads where the LAST message is from me if I replied recently — re-check.
+    const isFromMe =
+      last.labelIds?.includes('SENT') || /\bme\b/i.test(lastFrom);
+
+    if (pendingOnly && isFromMe) continue;
+
+    const internalDate = last.internalDate ? Number(last.internalDate) : Date.now();
+    out.push({
+      id: last.id ?? '',
+      threadId: last.threadId ?? '',
+      from: lastFrom,
+      subject: headerValue(lastHeaders, 'Subject') || '(no subject)',
+      snippet: last.snippet ?? '',
+      body: extractPlainBody(last.payload ?? undefined).slice(0, 8000),
+      receivedAt: new Date(internalDate).toISOString(),
+    });
+
+    if (out.length >= max) break;
+  }
+
+  return out;
+}
+
 export async function fetchUnreadMessages(limit: number): Promise<ParsedMessage[]> {
   const client = await getAuthedClient();
   if (!client) throw new Error('Gmail not connected. Click "Connect Gmail" first.');

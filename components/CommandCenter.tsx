@@ -9,6 +9,7 @@ import { ActivityLog } from './ActivityLog';
 import { WAModal } from './WAModal';
 import { SetupWizardModal } from './SetupWizardModal';
 import { GmailConnectModal } from './GmailConnectModal';
+import { WhatsAppConnectModal } from './WhatsAppConnectModal';
 import { Draft, RedraftRequest } from '@/lib/types';
 
 export function CommandCenter() {
@@ -18,7 +19,46 @@ export function CommandCenter() {
   const [showWAModal, setShowWAModal] = useState(false);
   const [showSetupWizard, setShowSetupWizard] = useState(false);
   const [showGmailModal, setShowGmailModal] = useState(false);
+  const [showWAConnectModal, setShowWAConnectModal] = useState(false);
+  const [isScanningWA, setIsScanningWA] = useState(false);
+  const [waBannerDismissed, setWaBannerDismissed] = useState(false);
   const [scanStatus, setScanStatus] = useState('');
+
+  // WhatsApp connection state
+  const [waConnected, setWaConnected] = useState<boolean | null>(null);
+  const refreshWaStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/whatsapp/status', { cache: 'no-store' });
+      const data = await res.json();
+      setWaConnected(data.state === 'connected');
+    } catch {
+      setWaConnected(false);
+    }
+  }, []);
+
+  // Gmail scan options — time range + pending-reply filter, persisted in localStorage
+  type Range = '7d' | '30d' | '90d' | '1y' | '2y' | 'all';
+  // Read saved range synchronously so we never call setState in mount-effect
+  const initialRange = ((): Range => {
+    if (typeof window === 'undefined') return '30d';
+    try {
+      const saved = window.localStorage.getItem('scanRange');
+      if (saved && ['7d', '30d', '90d', '1y', '2y', 'all'].includes(saved)) {
+        return saved as Range;
+      }
+    } catch {
+      /* ignore */
+    }
+    return '30d';
+  })();
+  const [scanRange, setScanRange] = useState<Range>(initialRange);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('scanRange', scanRange);
+    } catch {
+      /* ignore */
+    }
+  }, [scanRange]);
 
   // Gmail connection state — drives the banner + Connect Gmail button
   const [gmailConnected, setGmailConnected] = useState<boolean | null>(null);
@@ -38,20 +78,70 @@ export function CommandCenter() {
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect */
     void refreshGmailStatus();
+    void refreshWaStatus();
     /* eslint-enable react-hooks/set-state-in-effect */
     const onMessage = (e: MessageEvent) => {
       if (e.data?.type === 'gmail-connected') void refreshGmailStatus();
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [refreshGmailStatus]);
+  }, [refreshGmailStatus, refreshWaStatus]);
+
+  // (SSE listener mounted below, after addLog is in scope)
 
   // Slide-in banner state — animates in once we know we're disconnected
   const showBanner = gmailConnected === false && !bannerDismissed;
+  const showWaBanner = waConnected === false && !waBannerDismissed;
+
+  // ── Scan WhatsApp queue ──────────────────────────────────
+  const handleScanWA = async () => {
+    if (isScanningWA) return;
+    setIsScanningWA(true);
+    addLog('WhatsApp scan started', 'info');
+    try {
+      const res = await fetch('/api/whatsapp/scan', { method: 'POST' });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      if (data.drafts?.length) {
+        addDrafts(data.drafts as Draft[]);
+        addLog(`WhatsApp scan complete — ${data.drafts.length} draft${data.drafts.length === 1 ? '' : 's'}`, 'success');
+      } else {
+        addLog('WhatsApp queue empty', 'info');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      addLog(`WhatsApp scan error: ${msg}`, 'error');
+    }
+    setIsScanningWA(false);
+  };
 
   const { addDrafts, addDraft, updateDraft, addLog } = useDraftStore();
   const pending = usePendingDrafts();
   const sent = useSentDrafts();
+
+  // SSE — live push of activity log + WhatsApp status. Mounted once.
+  useEffect(() => {
+    const es = new EventSource('/api/events');
+    es.addEventListener('whatsapp-status', (e) => {
+      try {
+        const data = JSON.parse((e as MessageEvent).data);
+        setWaConnected(data.state === 'connected');
+      } catch {
+        /* ignore */
+      }
+    });
+    es.addEventListener('log', (e) => {
+      try {
+        const d = JSON.parse((e as MessageEvent).data);
+        addLog(d.msg, d.level);
+      } catch {
+        /* ignore */
+      }
+    });
+    return () => es.close();
+    // addLog is a stable Zustand setter
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Track latest scan so a stale completion can't overwrite a fresh one
   const scanReqRef = useRef(0);
@@ -69,7 +159,11 @@ export function CommandCenter() {
     addLog('Gmail inbox scan started', 'info');
 
     try {
-      const res = await fetch('/api/scan-gmail', { method: 'POST' });
+      const res = await fetch('/api/scan-gmail', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ range: scanRange, pendingOnly: true, max: 50 }),
+      });
       const data = await res.json();
 
       if (reqId !== scanReqRef.current) return; // stale; ignore
@@ -205,14 +299,29 @@ export function CommandCenter() {
               GMAIL LIVE
             </span>
           )}
+          {waConnected === false && (
+            <HeaderBtn onClick={() => setShowWAConnectModal(true)} variant="accent">
+              💬 Connect WhatsApp
+            </HeaderBtn>
+          )}
+          {waConnected === true && (
+            <span className="text-[10px] tracking-widest text-emerald-400/80 font-mono flex items-center gap-1.5 px-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]" />
+              WHATSAPP LIVE
+            </span>
+          )}
           <HeaderBtn onClick={() => setShowSetupWizard(true)} variant="secondary">
             ⚙ Setup
           </HeaderBtn>
           <HeaderBtn onClick={() => setShowWAModal(true)} disabled={isDraftingWA} variant="secondary">
             {isDraftingWA ? '⟳ Drafting…' : '+ WhatsApp'}
           </HeaderBtn>
+          <RangeSelect value={scanRange} onChange={setScanRange} disabled={isScanning} />
           <HeaderBtn onClick={handleScanGmail} disabled={isScanning || gmailConnected === false} variant="primary">
             {isScanning ? '⟳ Scanning…' : '⟳ Scan Gmail'}
+          </HeaderBtn>
+          <HeaderBtn onClick={handleScanWA} disabled={isScanningWA || waConnected !== true} variant="primary">
+            {isScanningWA ? '⟳ Scanning…' : '⟳ Scan WA'}
           </HeaderBtn>
         </div>
       </header>
@@ -253,6 +362,42 @@ export function CommandCenter() {
         </div>
       </div>
 
+      {/* ── WhatsApp banner ────────────────────────────────── */}
+      <div
+        className="flex-shrink-0 overflow-hidden transition-all duration-300 ease-out"
+        style={{
+          maxHeight: showWaBanner ? '80px' : '0px',
+          opacity: showWaBanner ? 1 : 0,
+        }}
+      >
+        <div className="bg-gradient-to-r from-emerald-500/10 via-emerald-500/5 to-transparent border-b border-emerald-500/20 px-5 py-3 flex items-center gap-4">
+          <div className="w-7 h-7 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center flex-shrink-0">
+            <span className="text-emerald-400 text-sm">💬</span>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-mono text-[11px] text-emerald-300 font-bold tracking-wide">
+              WhatsApp not connected
+            </p>
+            <p className="font-mono text-[10px] text-slate-500 mt-0.5">
+              Scan once to enable live message watching + AI drafts.
+            </p>
+          </div>
+          <button
+            onClick={() => setShowWAConnectModal(true)}
+            className="font-mono text-[10px] font-bold tracking-widest uppercase px-4 py-2 rounded-md bg-emerald-500 text-black hover:bg-emerald-400 transition-all shadow-[0_4px_20px_-4px_rgba(52,211,153,0.4)] active:scale-[0.98] flex-shrink-0"
+          >
+            Connect WhatsApp
+          </button>
+          <button
+            onClick={() => setWaBannerDismissed(true)}
+            aria-label="Dismiss"
+            className="w-6 h-6 flex items-center justify-center rounded text-slate-600 hover:text-slate-400 hover:bg-white/5 transition-colors text-base leading-none flex-shrink-0"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+
       {/* ── Main ────────────────────────────────────────────── */}
       <main className="flex-1 flex overflow-hidden">
         <DraftQueue />
@@ -281,6 +426,14 @@ export function CommandCenter() {
           addLog('Gmail connected', 'success');
         }}
       />
+      <WhatsAppConnectModal
+        isOpen={showWAConnectModal}
+        onClose={() => setShowWAConnectModal(false)}
+        onConnected={() => {
+          void refreshWaStatus();
+          addLog('WhatsApp connected', 'success');
+        }}
+      />
     </div>
   );
 }
@@ -295,6 +448,40 @@ function StatPill({ color, label }: { color: string; label: string }) {
     >
       {label}
     </span>
+  );
+}
+
+function RangeSelect({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: '7d' | '30d' | '90d' | '1y' | '2y' | 'all';
+  onChange: (v: '7d' | '30d' | '90d' | '1y' | '2y' | 'all') => void;
+  disabled?: boolean;
+}) {
+  const options: Array<{ v: typeof value; label: string }> = [
+    { v: '7d', label: 'Last 7 days' },
+    { v: '30d', label: 'Last 30 days' },
+    { v: '90d', label: 'Last 90 days' },
+    { v: '1y', label: 'Last 1 year' },
+    { v: '2y', label: 'Last 2 years' },
+    { v: 'all', label: 'All time' },
+  ];
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value as typeof value)}
+      disabled={disabled}
+      className="font-mono text-[10px] font-bold tracking-widest uppercase px-2 py-1.5 rounded bg-slate-900 text-slate-300 border border-slate-700 hover:border-slate-600 focus:border-amber-500/60 focus:outline-none disabled:opacity-40 cursor-pointer"
+      title="Time range for Gmail scan"
+    >
+      {options.map((o) => (
+        <option key={o.v} value={o.v} className="bg-slate-900 text-slate-200">
+          {o.label}
+        </option>
+      ))}
+    </select>
   );
 }
 

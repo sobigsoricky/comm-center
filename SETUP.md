@@ -95,6 +95,22 @@ If you see *"GOOGLE_CLIENT_ID not set"*, redo step 2e.
 
 ---
 
+## Connect WhatsApp (after Gmail works)
+
+1. Open the dashboard. Click the green **💬 Connect WhatsApp** button (header or banner).
+2. A modal opens with a QR code.
+3. On your phone: **WhatsApp → ⋮ → Linked Devices → Link a Device** → scan.
+4. Modal turns green: "Connected!". Auto-closes.
+5. The header now shows a "WHATSAPP LIVE" pulsing dot.
+
+From now on, the dashboard auto-queues every incoming non-group WhatsApp message. Click **⟳ Scan WA** to draft replies in batch. Each draft has a "➤ Send via WhatsApp" button.
+
+**Important on Railway:** add a persistent volume mounted at `/data` so the WhatsApp session survives redeploys. Without this volume, you'll re-scan QR every time you push code. See deploy section below.
+
+If WhatsApp logs out (you tap "Log out" inside Linked Devices on your phone, or don't open WhatsApp for 14+ days), just click Connect WhatsApp again and rescan.
+
+---
+
 ## Deploy to Railway (cloud — works without your laptop)
 
 1. Push this repo to GitHub.
@@ -109,8 +125,11 @@ If you see *"GOOGLE_CLIENT_ID not set"*, redo step 2e.
    GOOGLE_REDIRECT_URI      = https://<your-railway-domain>/api/auth/google/callback
    ```
 6. In Google Cloud Console → Credentials → your OAuth client → **Authorized redirect URIs** → add the same `https://<your-railway-domain>/api/auth/google/callback` (keep the localhost one too).
-7. ⚠ **Add a persistent volume**: Railway → your service → **Settings** → **Volumes** → **+ New Volume** → mount path: `/app/.tokens`. Without this, the Gmail refresh token gets wiped on every redeploy.
-8. Wait for the deploy to redeploy after env vars are saved. Open your Railway URL, click ⚙ Setup → Connect Gmail.
+7. ⚠ **Add a persistent volume**: Railway → your service → **Settings** → **Volumes** → **+ New Volume** → mount path: **`/data`**. This single volume holds:
+   - `/data/whatsapp-session/` — Baileys auth (survives redeploys, never re-scan QR)
+   - `/data/tokens/google.json` — Gmail OAuth refresh token (if you move it; default still works at `.tokens/`)
+   Without this volume, both auths get wiped on every redeploy.
+8. Wait for the deploy to redeploy after env vars are saved. Open your Railway URL, click ⚙ Setup → Connect Gmail, then click 💬 Connect WhatsApp.
 
 That's it — it now runs 24/7 in the cloud.
 

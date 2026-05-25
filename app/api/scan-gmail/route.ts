@@ -1,7 +1,12 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { callClaude, extractJSON } from '@/lib/claude';
-import { fetchUnreadMessages, createDraftReply, isConnected, type ParsedMessage } from '@/lib/gmail';
-import { MAX_EMAILS_PER_SCAN } from '@/lib/google-config';
+import {
+  fetchPendingThreads,
+  createDraftReply,
+  isConnected,
+  type ParsedMessage,
+  type TimeRange,
+} from '@/lib/gmail';
 import { Draft, ScanGmailResponse } from '@/lib/types';
 
 interface ClaudeReply {
@@ -10,44 +15,64 @@ interface ClaudeReply {
   fullDraft?: string;
 }
 
-export async function POST(): Promise<NextResponse<ScanGmailResponse>> {
+interface ScanRequest {
+  range?: TimeRange;
+  pendingOnly?: boolean;
+  max?: number;
+}
+
+// Hard caps (so a fat-fingered request can't burn $$)
+const HARD_MAX = 50;
+const PARALLEL = 5; // concurrent Claude calls
+
+export async function POST(req: NextRequest): Promise<NextResponse<ScanGmailResponse>> {
   try {
-    // 1. Verify connection
-    const connected = await isConnected();
-    if (!connected) {
+    // Parse body (safe even if empty / wrong content-type)
+    let body: ScanRequest = {};
+    try {
+      body = (await req.json()) as ScanRequest;
+    } catch {
+      // empty body is fine — use defaults
+    }
+
+    const range: TimeRange = body.range ?? '30d';
+    const pendingOnly = body.pendingOnly ?? true;
+    const max = Math.max(1, Math.min(HARD_MAX, body.max ?? 10));
+
+    if (!(await isConnected())) {
       return NextResponse.json(
         { drafts: [], error: 'Gmail not connected. Click "Connect Gmail" to authorize.' },
         { status: 401 }
       );
     }
 
-    // 2. Fetch unread emails directly via Gmail API
-    const messages = await fetchUnreadMessages(MAX_EMAILS_PER_SCAN);
+    const messages = await fetchPendingThreads({ range, max, pendingOnly });
+    if (messages.length === 0) return NextResponse.json({ drafts: [] });
 
-    if (messages.length === 0) {
-      return NextResponse.json({ drafts: [] });
+    // Process in parallel batches to control concurrency
+    const drafts: Draft[] = [];
+    for (let i = 0; i < messages.length; i += PARALLEL) {
+      const batch = messages.slice(i, i + PARALLEL);
+      const results = await Promise.all(
+        batch.map(async (msg): Promise<Draft | null> => {
+          try {
+            const reply = await draftReplyForEmail(msg);
+            const gmailDraftId = await createDraftReply({
+              threadId: msg.threadId,
+              to: msg.from,
+              subject: msg.subject,
+              bodyText: reply.fullDraft,
+            });
+            return buildDraft(msg, reply, gmailDraftId);
+          } catch (err) {
+            console.error('[scan-gmail] per-message error:', msg.id, err);
+            return null;
+          }
+        })
+      );
+      for (const d of results) if (d) drafts.push(d);
     }
 
-    // 3. For each email, ask Claude to draft a reply, then save as Gmail draft
-    const drafted = await Promise.all(
-      messages.map(async (msg) => {
-        try {
-          const reply = await draftReplyForEmail(msg);
-          const draftId = await createDraftReply({
-            threadId: msg.threadId,
-            to: msg.from,
-            subject: msg.subject,
-            bodyText: reply.fullDraft,
-          });
-          return buildDraft(msg, reply, draftId);
-        } catch (err) {
-          console.error('[scan-gmail] per-message error:', msg.id, err);
-          return null;
-        }
-      })
-    );
-
-    const drafts = drafted.filter((d): d is Draft => d !== null);
     return NextResponse.json({ drafts });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';

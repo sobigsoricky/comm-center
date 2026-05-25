@@ -16,11 +16,20 @@ export async function callClaude(
   mcpServers?: MCPServer[],
   maxTokens = 4000
 ): Promise<string> {
+  // System prompt sent as a cache_control'd block — cached portion costs 10% of
+  // normal input tokens on subsequent calls within the 5-min cache window.
+  // For batch scans of 50 emails, the cached system prompt saves ~90% of cost.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: CLAUDE_MODEL,
     max_tokens: maxTokens,
-    system: SYSTEM_PROMPT,
+    system: [
+      {
+        type: 'text',
+        text: SYSTEM_PROMPT,
+        cache_control: { type: 'ephemeral' },
+      },
+    ],
     messages: [{ role: 'user', content: userMessage }],
   };
 
