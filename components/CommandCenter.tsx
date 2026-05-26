@@ -13,6 +13,21 @@ import { WhatsAppConnectModal } from './WhatsAppConnectModal';
 import { Draft, RedraftRequest } from '@/lib/types';
 
 export function CommandCenter() {
+  // Store actions — pulled first so callbacks below can close over them
+  // without hitting the temporal dead zone.
+  const {
+    addDrafts,
+    addDraft,
+    updateDraft,
+    addLog,
+    setGmailConnected: storeSetGmailConnected,
+    setWAConnected: storeSetWAConnected,
+    recordGmailScan,
+    recordWAScan,
+  } = useDraftStore();
+  const pending = usePendingDrafts();
+  const sent = useSentDrafts();
+
   const [isScanning, setIsScanning] = useState(false);
   const [isDraftingWA, setIsDraftingWA] = useState(false);
   const [isRedrafting, setIsRedrafting] = useState(false);
@@ -30,11 +45,14 @@ export function CommandCenter() {
     try {
       const res = await fetch('/api/whatsapp/status', { cache: 'no-store' });
       const data = await res.json();
-      setWaConnected(data.state === 'connected');
+      const connected = data.state === 'connected';
+      setWaConnected(connected);
+      storeSetWAConnected(connected);
     } catch {
       setWaConnected(false);
+      storeSetWAConnected(false);
     }
-  }, []);
+  }, [storeSetWAConnected]);
 
   // Gmail scan options — time range + pending-reply filter, persisted in localStorage
   type Range = '7d' | '30d' | '90d' | '1y' | '2y' | 'all';
@@ -68,11 +86,14 @@ export function CommandCenter() {
     try {
       const res = await fetch('/api/auth/google/status', { cache: 'no-store' });
       const data = await res.json();
-      setGmailConnected(Boolean(data.connected));
+      const connected = Boolean(data.connected);
+      setGmailConnected(connected);
+      storeSetGmailConnected(connected);
     } catch {
       setGmailConnected(false);
+      storeSetGmailConnected(false);
     }
-  }, []);
+  }, [storeSetGmailConnected]);
 
   // Poll status on mount + when the OAuth popup posts back
   useEffect(() => {
@@ -104,8 +125,10 @@ export function CommandCenter() {
       if (data.error) throw new Error(data.error);
       if (data.drafts?.length) {
         addDrafts(data.drafts as Draft[]);
+        recordWAScan(data.drafts.length);
         addLog(`WhatsApp scan complete — ${data.drafts.length} draft${data.drafts.length === 1 ? '' : 's'}`, 'success');
       } else {
+        recordWAScan(0);
         addLog('WhatsApp queue empty', 'info');
       }
     } catch (err) {
@@ -115,17 +138,15 @@ export function CommandCenter() {
     setIsScanningWA(false);
   };
 
-  const { addDrafts, addDraft, updateDraft, addLog } = useDraftStore();
-  const pending = usePendingDrafts();
-  const sent = useSentDrafts();
-
   // SSE — live push of activity log + WhatsApp status. Mounted once.
   useEffect(() => {
     const es = new EventSource('/api/events');
     es.addEventListener('whatsapp-status', (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data);
-        setWaConnected(data.state === 'connected');
+        const connected = data.state === 'connected';
+        setWaConnected(connected);
+        storeSetWAConnected(connected);
       } catch {
         /* ignore */
       }
@@ -171,9 +192,11 @@ export function CommandCenter() {
 
       if (data.drafts?.length > 0) {
         addDrafts(data.drafts as Draft[]);
+        recordGmailScan(data.drafts.length);
         setScanStatus(`✓ ${data.drafts.length} draft${data.drafts.length !== 1 ? 's' : ''} saved to Gmail`);
         addLog(`Inbox scan complete — ${data.drafts.length} drafts created`, 'success');
       } else {
+        recordGmailScan(0);
         setScanStatus('✓ Inbox clear');
         addLog('Inbox scan complete — no unread emails', 'info');
       }

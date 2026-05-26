@@ -4,10 +4,30 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { Draft, LogEntry } from '@/lib/types';
 
+export interface ChannelStatus {
+  connected: boolean | null;     // null = unknown (pre-first-probe)
+  connectedAt: string | null;    // ISO of last connect transition
+  disconnectedAt: string | null; // ISO of last disconnect transition
+  lastScanAt: string | null;     // ISO of last successful scan
+  lastScanCount: number | null;  // drafts created in last scan
+}
+
+const emptyStatus: ChannelStatus = {
+  connected: null,
+  connectedAt: null,
+  disconnectedAt: null,
+  lastScanAt: null,
+  lastScanCount: null,
+};
+
 interface DraftStore {
   drafts: Draft[];
   log: LogEntry[];
   selectedId: string | null;
+
+  // Connection status (persisted so the box shows last-known state on reload)
+  gmailStatus: ChannelStatus;
+  waStatus: ChannelStatus;
 
   // Draft actions
   setDrafts: (drafts: Draft[]) => void;
@@ -20,6 +40,12 @@ interface DraftStore {
   // Selection
   selectDraft: (id: string | null) => void;
 
+  // Connection actions
+  setGmailConnected: (connected: boolean) => void;
+  setWAConnected: (connected: boolean) => void;
+  recordGmailScan: (count: number) => void;
+  recordWAScan: (count: number) => void;
+
   // Log
   addLog: (msg: string, level?: LogEntry['level']) => void;
   clearLog: () => void;
@@ -31,6 +57,8 @@ export const useDraftStore = create<DraftStore>()(
       drafts: [],
       log: [],
       selectedId: null,
+      gmailStatus: emptyStatus,
+      waStatus: emptyStatus,
 
       setDrafts: (drafts) => set({ drafts }),
 
@@ -78,6 +106,54 @@ export const useDraftStore = create<DraftStore>()(
 
       selectDraft: (id) => set({ selectedId: id }),
 
+      setGmailConnected: (connected) =>
+        set((state) => {
+          const prev = state.gmailStatus.connected;
+          if (prev === connected) return {}; // no transition
+          const now = new Date().toISOString();
+          return {
+            gmailStatus: {
+              ...state.gmailStatus,
+              connected,
+              connectedAt: connected ? now : state.gmailStatus.connectedAt,
+              disconnectedAt: !connected ? now : state.gmailStatus.disconnectedAt,
+            },
+          };
+        }),
+
+      setWAConnected: (connected) =>
+        set((state) => {
+          const prev = state.waStatus.connected;
+          if (prev === connected) return {};
+          const now = new Date().toISOString();
+          return {
+            waStatus: {
+              ...state.waStatus,
+              connected,
+              connectedAt: connected ? now : state.waStatus.connectedAt,
+              disconnectedAt: !connected ? now : state.waStatus.disconnectedAt,
+            },
+          };
+        }),
+
+      recordGmailScan: (count) =>
+        set((state) => ({
+          gmailStatus: {
+            ...state.gmailStatus,
+            lastScanAt: new Date().toISOString(),
+            lastScanCount: count,
+          },
+        })),
+
+      recordWAScan: (count) =>
+        set((state) => ({
+          waStatus: {
+            ...state.waStatus,
+            lastScanAt: new Date().toISOString(),
+            lastScanCount: count,
+          },
+        })),
+
       addLog: (msg, level = 'info') =>
         set((state) => ({
           log: [
@@ -100,7 +176,12 @@ export const useDraftStore = create<DraftStore>()(
     {
       name: 'rankfast-comm-center',
       // Only persist drafts and log — selectedId is ephemeral
-      partialize: (state) => ({ drafts: state.drafts, log: state.log }),
+      partialize: (state) => ({
+        drafts: state.drafts,
+        log: state.log,
+        gmailStatus: state.gmailStatus,
+        waStatus: state.waStatus,
+      }),
     }
   )
 );
